@@ -53,6 +53,7 @@ struct vt_h264_encoder
 	bool limit_bitrate;
 	uint32_t max_bitrate;
 	const char *profile;
+	bool bframes;
 
 	enum video_format obs_pix_fmt;
 	int vt_pix_fmt;
@@ -159,7 +160,7 @@ static OSStatus session_set_bitrate(VTCompressionSessionRef session,
 
 	if (limit_bitrate) {
 		int32_t bytes = ((new_max_bitrate * 1000) / 8);
-		float dur = 1.0;
+		float dur = 1.5;
 
 		CFNumberRef bytes_per_sec = CFNumberCreate(NULL,
 				kCFNumberSInt32Type, &bytes);
@@ -324,13 +325,16 @@ static bool create_encoder(struct vt_h264_encoder *enc)
 
 	STATUS_CHECK(session_set_prop_int(s,
 			kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration,
+			enc->keyint));
+	STATUS_CHECK(session_set_prop_int(s,
+			kVTCompressionPropertyKey_MaxKeyFrameInterval,
 			enc->keyint * ((float)enc->fps_num/enc->fps_den)));
 	STATUS_CHECK(session_set_prop_int(s,
 			kVTCompressionPropertyKey_ExpectedFrameRate,
 			ceil((float)enc->fps_num/ enc->fps_den)));
 	STATUS_CHECK(session_set_prop(s,
 			kVTCompressionPropertyKey_AllowFrameReordering,
-			kCFBooleanFalse));
+			enc->bframes ? kCFBooleanTrue : kCFBooleanFalse));
 
 	// This can fail depending on hardware configuration
 	code = session_set_prop(s, kVTCompressionPropertyKey_RealTime,
@@ -456,6 +460,7 @@ static void update_params(struct vt_h264_encoder *enc, obs_data_t *settings)
 	enc->limit_bitrate = obs_data_get_bool(settings, "limit_bitrate");
 	enc->max_bitrate = obs_data_get_int(settings, "max_bitrate");
 	enc->vt_encoder_id = obs_data_get_string(settings, "vt_encoder");
+	enc->bframes = obs_data_get_bool(settings, "bframes");
 }
 
 static bool vt_h264_update(void *data, obs_data_t *settings)
@@ -663,10 +668,18 @@ static bool is_sample_keyframe(CMSampleBufferRef buffer)
 }
 
 static bool parse_sample(struct vt_h264_encoder *enc, CMSampleBufferRef buffer,
-		struct encoder_packet *packet)
+		struct encoder_packet *packet, CMTime off)
 {
 	CMTime pts = CMSampleBufferGetPresentationTimeStamp(buffer);
 	CMTime dts = CMSampleBufferGetDecodeTimeStamp(buffer);
+
+	pts = CMTimeMultiplyByRatio(pts, enc->fps_num, enc->fps_den);
+	dts = CMTimeMultiplyByRatio(dts, enc->fps_num, enc->fps_den);
+
+	// imitate x264's negative dts when bframes might have pts < dts
+	if (enc->bframes)
+		dts = CMTimeSubtract(dts, off);
+
 	bool keyframe = is_sample_keyframe(buffer);
 
 	da_resize(enc->packet_data, 0);
@@ -742,8 +755,10 @@ static bool vt_h264_encode(void *data, struct encoder_frame *frame,
 	struct vt_h264_encoder *enc = data;
 
 	OSStatus code;
+
 	CMTime dur = CMTimeMake(enc->fps_den, enc->fps_num);
-	CMTime pts = CMTimeMake(frame->pts, 1);
+	CMTime off = CMTimeMultiply(dur, 2);
+	CMTime pts = CMTimeMultiply(dur, frame->pts);
 
 	CVPixelBufferRef pixbuf = NULL;
 
@@ -784,7 +799,7 @@ static bool vt_h264_encode(void *data, struct encoder_frame *frame,
 		return true;
 
 	*received_packet = true;
-	return parse_sample(enc, buffer, packet);
+	return parse_sample(enc, buffer, packet, off);
 
 fail:
 	return false;
@@ -814,6 +829,7 @@ static const char *vt_h264_getname(void)
 #define TEXT_PROFILE            obs_module_text("Profile")
 #define TEXT_NONE               obs_module_text("None")
 #define TEXT_DEFAULT            obs_module_text("DefaultEncoder")
+#define TEXT_BFRAMES            obs_module_text("UseBFrames")
 
 static bool limit_bitrate_modified(obs_properties_t *ppts, obs_property_t *p,
 		obs_data_t *settings)
@@ -856,6 +872,8 @@ static obs_properties_t *vt_h264_properties(void *unused)
 	obs_property_list_add_string(p, "main", "main");
 	obs_property_list_add_string(p, "high", "high");
 
+	obs_properties_add_bool(props, "bframes", TEXT_BFRAMES);
+
 	return props;
 }
 
@@ -867,6 +885,7 @@ static void vt_h264_defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, "max_bitrate", 2500);
 	obs_data_set_default_int(settings, "keyint_sec", 0);
 	obs_data_set_default_string(settings, "profile", "");
+	obs_data_set_default_bool(settings, "bframes", true);
 }
 
 static struct obs_encoder_info vt_h264_info = {
