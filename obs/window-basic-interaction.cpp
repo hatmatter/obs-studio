@@ -58,6 +58,14 @@ OBSBasicInteraction::OBSBasicInteraction(QWidget *parent, OBSSource source_)
 
 	const char *name = obs_source_get_name(source);
 	setWindowTitle(QTStr("Basic.InteractionWindow").arg(QT_UTF8(name)));
+
+	auto addDrawCallback = [this] ()
+	{
+		obs_display_add_draw_callback(ui->preview->GetDisplay(),
+				OBSBasicInteraction::DrawPreview, this);
+	};
+
+	connect(ui->preview, &OBSQTDisplay::DisplayCreated, addDrawCallback);
 }
 
 OBSBasicInteraction::~OBSBasicInteraction()
@@ -355,7 +363,4 @@ bool OBSBasicInteraction::HandleKeyEvent(QKeyEvent *event)
 void OBSBasicInteraction::Init()
 {
 	show();
-
-	obs_display_add_draw_callback(ui->preview->GetDisplay(),
-			OBSBasicInteraction::DrawPreview, this);
 }

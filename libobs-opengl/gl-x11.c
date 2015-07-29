@@ -53,7 +53,13 @@ static int ctx_pbuffer_attribs[] = {
 	None
 };
 
-static int ctx_visual_attribs[] = {None};
+static int ctx_visual_attribs[] = {
+	GLX_STENCIL_SIZE, 0,
+	GLX_DEPTH_SIZE, 0,
+	GLX_BUFFER_SIZE, 32,
+	GLX_DOUBLEBUFFER, true,
+	GLX_X_RENDERABLE, true,
+};
 
 struct gl_windowinfo {
 	/* We store this value since we can fetch a lot
@@ -249,7 +255,7 @@ static void gl_context_destroy(struct gl_platform *plat)
 {
 	Display *display = plat->display;
 
-	glXMakeCurrent(display, None, 0);
+	glXMakeContextCurrent(display, None, None, NULL);
 	glXDestroyContext(display, plat->context);
 	bfree(plat);
 }
@@ -385,7 +391,6 @@ extern void gl_platform_destroy(struct gl_platform *plat)
 extern bool gl_platform_init_swapchain(struct gs_swap_chain *swap)
 {
 	Display *display = swap->device->plat->display;
-	struct gs_init_data *info = &swap->info;
 	xcb_connection_t *xcb_conn = XGetXCBConnection(display);
 	xcb_window_t wid = xcb_generate_id(xcb_conn);
 	xcb_window_t parent = swap->info.window.id;
@@ -404,21 +409,11 @@ extern bool gl_platform_init_swapchain(struct gs_swap_chain *swap)
 		goto fail_screen;
 	}
 
-	/* Define our FBConfig hints for GLX... */
-	const int fb_attribs[] = {
-		GLX_STENCIL_SIZE, get_stencil_format_bits(info->zsformat),
-		GLX_DEPTH_SIZE, get_depth_format_bits(info->zsformat),
-		GLX_BUFFER_SIZE, get_color_format_bits(info->format),
-		GLX_DOUBLEBUFFER, true,
-		GLX_X_RENDERABLE, true,
-		None
-	};
-
 	/* ...fetch the best match... */
 	{
 		int num_configs;
 		fb_config = glXChooseFBConfig(display, screen_num,
-			                      fb_attribs, &num_configs);
+			                      ctx_visual_attribs, &num_configs);
 
 		if (!fb_config || !num_configs) {
 			blog(LOG_ERROR, "Failed to find FBConfig!");
@@ -490,7 +485,7 @@ extern void device_enter_context(gs_device_t *device)
 
 	if (device->cur_swap) {
 		XID window = device->cur_swap->wi->window;
-		if (!glXMakeCurrent(display, window, context)) {
+		if (!glXMakeContextCurrent(display, window, window, context)) {
 			blog(LOG_ERROR, "Failed to make context current.");
 		}
 	} else {
@@ -505,7 +500,7 @@ extern void device_leave_context(gs_device_t *device)
 {
 	Display *display = device->plat->display;
 
-	if (!glXMakeCurrent(display, None, NULL)) {
+	if (!glXMakeContextCurrent(display, None, None, NULL)) {
 		blog(LOG_ERROR, "Failed to reset current context.");
 	}
 }
@@ -551,7 +546,8 @@ extern void device_load_swapchain(gs_device_t *device, gs_swapchain_t *swap)
 	device->cur_swap = swap;
 
 	if (swap) {
-		if (!glXMakeCurrent(dpy, swap->wi->window, ctx)) {
+		XID window = swap->wi->window;
+		if (!glXMakeContextCurrent(dpy, window, window, ctx)) {
 			blog(LOG_ERROR, "Failed to make context current.");
 		}
 	} else {

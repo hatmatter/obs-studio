@@ -94,6 +94,14 @@ OBSBasicProperties::OBSBasicProperties(QWidget *parent, OBSSource source_)
 			"update_properties",
 			OBSBasicProperties::UpdateProperties,
 			this);
+
+	auto addDrawCallback = [this] ()
+	{
+		obs_display_add_draw_callback(preview->GetDisplay(),
+				OBSBasicProperties::DrawPreview, this);
+	};
+
+	connect(preview, &OBSQTDisplay::DisplayCreated, addDrawCallback);
 }
 
 OBSBasicProperties::~OBSBasicProperties()
@@ -221,9 +229,6 @@ void OBSBasicProperties::closeEvent(QCloseEvent *event)
 void OBSBasicProperties::Init()
 {
 	show();
-
-	obs_display_add_draw_callback(preview->GetDisplay(),
-			OBSBasicProperties::DrawPreview, this);
 }
 
 int OBSBasicProperties::CheckSettings()

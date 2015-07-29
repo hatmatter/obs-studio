@@ -102,6 +102,14 @@ OBSBasicFilters::OBSBasicFilters(QWidget *parent, OBSSource source_)
 
 	if (audioOnly || (audio && !async))
 		ui->asyncLabel->setText(QTStr("Basic.Filters.AudioFilters"));
+
+	auto addDrawCallback = [this] ()
+	{
+		obs_display_add_draw_callback(ui->preview->GetDisplay(),
+				OBSBasicFilters::DrawPreview, this);
+	};
+
+	connect(ui->preview, &OBSQTDisplay::DisplayCreated, addDrawCallback);
 }
 
 OBSBasicFilters::~OBSBasicFilters()
@@ -113,9 +121,6 @@ OBSBasicFilters::~OBSBasicFilters()
 void OBSBasicFilters::Init()
 {
 	show();
-
-	obs_display_add_draw_callback(ui->preview->GetDisplay(),
-			OBSBasicFilters::DrawPreview, this);
 }
 
 inline OBSSource OBSBasicFilters::GetFilter(int row, bool async)
