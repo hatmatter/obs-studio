@@ -21,6 +21,7 @@ OBSProjector::OBSProjector(QWidget *widget, obs_source_t *source_)
 	auto addDrawCallback = [this] ()
 	{
 		obs_display_add_draw_callback(GetDisplay(), OBSRender, this);
+		obs_display_set_background_color(GetDisplay(), 0x000000);
 	};
 
 	connect(this, &OBSQTDisplay::DisplayCreated, addDrawCallback);
@@ -44,8 +45,6 @@ void OBSProjector::Init(int monitor)
 
 	if (source)
 		obs_source_inc_showing(source);
-
-	obs_display_set_background_color(GetDisplay(), 0x000000);
 
 	QAction *action = new QAction(this);
 	action->setShortcut(Qt::Key_Escape);
