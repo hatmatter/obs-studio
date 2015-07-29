@@ -51,7 +51,8 @@ struct vt_h264_encoder
 	uint32_t fps_den;
 	uint32_t bitrate;
 	bool limit_bitrate;
-	uint32_t max_bitrate;
+	uint32_t rc_max_bitrate;
+	float rc_max_bitrate_window;
 	const char *profile;
 	bool bframes;
 
@@ -149,8 +150,8 @@ static OSStatus session_set_prop(VTCompressionSessionRef session,
 }
 
 static OSStatus session_set_bitrate(VTCompressionSessionRef session,
-		bool limit_bitrate, int new_max_bitrate,
-		int new_bitrate)
+		int new_bitrate, bool limit_bitrate, int max_bitrate,
+		float max_bitrate_window)
 {
 	OSStatus code;
 
@@ -159,32 +160,33 @@ static OSStatus session_set_bitrate(VTCompressionSessionRef session,
 			new_bitrate * 1000));
 
 	if (limit_bitrate) {
-		int32_t bytes = ((new_max_bitrate * 1000) / 8);
-		float dur = 1.5;
+		int32_t cpb_size = max_bitrate * 125 * max_bitrate_window;
 
-		CFNumberRef bytes_per_sec = CFNumberCreate(NULL,
-				kCFNumberSInt32Type, &bytes);
-		CFNumberRef duration = CFNumberCreate(NULL,
-				kCFNumberFloatType, &dur);
+		CFNumberRef cf_cpb_size = CFNumberCreate(NULL,
+				kCFNumberIntType, &cpb_size);
+		CFNumberRef cf_cpb_window_s = CFNumberCreate(NULL,
+				kCFNumberFloatType, &max_bitrate_window);
 
-		CFMutableArrayRef limit = CFArrayCreateMutable(
+		CFMutableArrayRef rate_control = CFArrayCreateMutable(
 				kCFAllocatorDefault, 2,
 				&kCFTypeArrayCallBacks);
 
-		CFArrayAppendValue(limit, bytes_per_sec);
-		CFArrayAppendValue(limit, duration);
+		CFArrayAppendValue(rate_control, cf_cpb_size);
+		CFArrayAppendValue(rate_control, cf_cpb_window_s);
 
 		code = session_set_prop(session,
 				kVTCompressionPropertyKey_DataRateLimits,
-				limit);
+				rate_control);
 
-		CFRelease(bytes_per_sec);
-		CFRelease(duration);
-		CFRelease(limit);
+		CFRelease(cf_cpb_size);
+		CFRelease(cf_cpb_window_s);
+		CFRelease(rate_control);
 
-		if (code == kVTPropertyNotSupportedErr)
+		if (code == kVTPropertyNotSupportedErr) {
 			log_osstatus(LOG_WARNING, NULL,
 				"setting DataRateLimits on session", code);
+			return noErr;
+		}
 	}
 
 	return noErr;
@@ -350,8 +352,8 @@ static bool create_encoder(struct vt_h264_encoder *enc)
 			kVTCompressionPropertyKey_ProfileLevel,
 			obs_to_vt_profile(enc->profile)));
 
-	STATUS_CHECK(session_set_bitrate(s, enc->limit_bitrate,
-			enc->max_bitrate, enc->bitrate));
+	STATUS_CHECK(session_set_bitrate(s, enc->bitrate, enc->limit_bitrate,
+			enc->rc_max_bitrate, enc->rc_max_bitrate_window));
 
 	STATUS_CHECK(session_set_colorspace(s, enc->colorspace));
 
@@ -388,17 +390,18 @@ static void vt_h264_destroy(void *data)
 static void dump_encoder_info(struct vt_h264_encoder *enc)
 {
 	VT_BLOG(LOG_INFO, "settings:\n"
-		"\tvt_encoder_id  %s\n"
-		"\tbitrate:       %d\n"
-		"\tfps_num:       %d\n"
-		"\tfps_den:       %d\n"
-		"\twidth:         %d\n"
-		"\theight:        %d\n"
-		"\tkeyint:        %d\n"
-		"\tlimit_bitrate: %s\n"
-		"\tmax_bitrate:   %d\n"
-		"\thw_enc:        %s\n"
-		"\tprofile:       %s\n",
+		"\tvt_encoder_id          %s\n"
+		"\tbitrate:               %d (kbps)\n"
+		"\tfps_num:               %d\n"
+		"\tfps_den:               %d\n"
+		"\twidth:                 %d\n"
+		"\theight:                %d\n"
+		"\tkeyint:                %d (s)\n"
+		"\tlimit_bitrate:         %s\n"
+		"\trc_max_bitrate:        %d (kbps)\n"
+		"\trc_max_bitrate_window: %f (s)\n"
+		"\thw_enc:                %s\n"
+		"\tprofile:               %s\n",
 		(enc->vt_encoder_id != NULL && !!strlen(enc->vt_encoder_id))
 				? enc->vt_encoder_id : "default",
 		enc->bitrate,
@@ -408,7 +411,8 @@ static void dump_encoder_info(struct vt_h264_encoder *enc)
 		enc->height,
 		enc->keyint,
 		enc->limit_bitrate ? "on" : "off",
-		enc->max_bitrate,
+		enc->rc_max_bitrate,
+		enc->rc_max_bitrate_window,
 		enc->hw_enc ? "on" : "off",
 		(enc->profile != NULL && !!strlen(enc->profile))
 				? enc->profile : "default");
@@ -458,7 +462,9 @@ static void update_params(struct vt_h264_encoder *enc, obs_data_t *settings)
 	enc->bitrate = (uint32_t)obs_data_get_int(settings, "bitrate");
 	enc->profile = obs_data_get_string(settings, "profile");
 	enc->limit_bitrate = obs_data_get_bool(settings, "limit_bitrate");
-	enc->max_bitrate = obs_data_get_int(settings, "max_bitrate");
+	enc->rc_max_bitrate = obs_data_get_int(settings, "max_bitrate");
+	enc->rc_max_bitrate_window = obs_data_get_double(settings,
+			"max_bitrate_window");
 	enc->vt_encoder_id = obs_data_get_string(settings, "vt_encoder");
 	enc->bframes = obs_data_get_bool(settings, "bframes");
 }
@@ -477,8 +483,8 @@ static bool vt_h264_update(void *data, obs_data_t *settings)
 		return true;
 
 	OSStatus code = session_set_bitrate(enc->session,
-			enc->limit_bitrate, enc->max_bitrate,
-			enc->bitrate);
+			enc->bitrate, enc->limit_bitrate, enc->rc_max_bitrate,
+			enc->rc_max_bitrate_window);
 	if (code != noErr)
 		VT_BLOG(LOG_WARNING,
 				"failed to set bitrate to session");
@@ -673,8 +679,10 @@ static bool parse_sample(struct vt_h264_encoder *enc, CMSampleBufferRef buffer,
 	CMTime pts = CMSampleBufferGetPresentationTimeStamp(buffer);
 	CMTime dts = CMSampleBufferGetDecodeTimeStamp(buffer);
 
-	pts = CMTimeMultiplyByRatio(pts, enc->fps_num, enc->fps_den);
-	dts = CMTimeMultiplyByRatio(dts, enc->fps_num, enc->fps_den);
+	pts = CMTimeMultiplyByFloat64(pts,
+			((Float64)enc->fps_num/enc->fps_den));
+	dts = CMTimeMultiplyByFloat64(dts,
+			((Float64)enc->fps_num/enc->fps_den));
 
 	// imitate x264's negative dts when bframes might have pts < dts
 	if (enc->bframes)
@@ -825,6 +833,7 @@ static const char *vt_h264_getname(void)
 #define TEXT_BITRATE            obs_module_text("Bitrate")
 #define TEXT_USE_MAX_BITRATE    obs_module_text("UseMaxBitrate")
 #define TEXT_MAX_BITRATE        obs_module_text("MaxBitrate")
+#define TEXT_MAX_BITRATE_WINDOW obs_module_text("MaxBitrateWindow")
 #define TEXT_KEYINT_SEC         obs_module_text("KeyframeIntervalSec")
 #define TEXT_PROFILE            obs_module_text("Profile")
 #define TEXT_NONE               obs_module_text("None")
@@ -836,6 +845,8 @@ static bool limit_bitrate_modified(obs_properties_t *ppts, obs_property_t *p,
 {
 	bool use_max_bitrate = obs_data_get_bool(settings, "limit_bitrate");
 	p = obs_properties_get(ppts, "max_bitrate");
+	obs_property_set_visible(p, use_max_bitrate);
+	p = obs_properties_get(ppts, "max_bitrate_window");
 	obs_property_set_visible(p, use_max_bitrate);
 	return true;
 }
@@ -862,6 +873,8 @@ static obs_properties_t *vt_h264_properties(void *unused)
 
 	obs_properties_add_int(props, "max_bitrate", TEXT_MAX_BITRATE, 50,
 			10000000, 1);
+	obs_properties_add_float(props, "max_bitrate_window",
+			TEXT_MAX_BITRATE_WINDOW, 0.10f, 10.0f, 0.25f);
 
 	obs_properties_add_int(props, "keyint_sec", TEXT_KEYINT_SEC, 0, 20, 1);
 
@@ -883,6 +896,7 @@ static void vt_h264_defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, "bitrate", 2500);
 	obs_data_set_default_bool(settings, "limit_bitrate", false);
 	obs_data_set_default_int(settings, "max_bitrate", 2500);
+	obs_data_set_default_double(settings, "max_bitrate_window", 1.5f);
 	obs_data_set_default_int(settings, "keyint_sec", 0);
 	obs_data_set_default_string(settings, "profile", "");
 	obs_data_set_default_bool(settings, "bframes", true);
